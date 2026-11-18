@@ -7,35 +7,35 @@ from tkinter import ttk
 
 
 COLORS = {
-    "background": "#0F1220",
-    "surface": "#181C2E",
-    "surface_border": "#262B45",
-    "elevated": "#20253D",
-    "text": "#E8EAF6",
-    "secondary": "#9AA0C3",
-    "disabled": "#5A6080",
-    "accent": "#7C5CFF",
-    "accent_hover": "#8F75FF",
-    "accent_pressed": "#6A4AE6",
+    "background": "#101521",
+    "surface": "#171F2E",
+    "surface_border": "#29364A",
+    "elevated": "#202B3D",
+    "text": "#F2F5FB",
+    "secondary": "#AAB7CA",
+    "disabled": "#738198",
+    "accent": "#705CFF",
+    "accent_hover": "#8575FF",
+    "accent_pressed": "#5D49E8",
     "white": "#FFFFFF",
     "success": "#3DDC97",
     "warning": "#FFB547",
     "error": "#FF5C7A",
-    "input": "#131729",
+    "input": "#131C2A",
 }
 
 SPACE = {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 32}
 SIZE = {
-    "main_width": 700,
-    "main_height": 560,
-    "main_min_width": 560,
-    "main_min_height": 520,
-    "card_width": 480,
-    "main_card_height": 360,
-    "result_width": 620,
-    "result_height": 560,
-    "result_min_width": 520,
-    "result_min_height": 440,
+    "main_width": 740,
+    "main_height": 600,
+    "main_min_width": 600,
+    "main_min_height": 540,
+    "card_width": 520,
+    "main_card_height": 380,
+    "result_width": 680,
+    "result_height": 600,
+    "result_min_width": 560,
+    "result_min_height": 460,
     "lock_dialog_width": 440,
     "lock_dialog_height": 200,
     "button_height": 48,
@@ -43,16 +43,25 @@ SIZE = {
     "corner": 14,
     "outline": 1,
 }
+_BASE_SPACE = SPACE.copy()
+_BASE_SIZE = SIZE.copy()
+_BASE_TK_SCALING = 96 / 72
 TIMING = {"ui_poll_ms": 100}
 FONT = {
-    "family": "Segoe UI Variable",
-    "fallback": "Segoe UI",
-    "title": 24,
-    "heading": 16,
-    "body": 13,
-    "caption": 11,
-    "hero": 40,
+    "family": "Segoe UI",
+    "title": 27,
+    "heading": 18,
+    "body": 14,
+    "caption": 12,
+    "hero": 44,
 }
+
+
+def _scale_layout(scale: float) -> None:
+    for dimensions, base_dimensions in ((SPACE, _BASE_SPACE), (SIZE, _BASE_SIZE)):
+        dimensions.update(
+            {name: max(1, round(value * scale)) for name, value in base_dimensions.items()}
+        )
 
 
 def _font(size: int, weight: str = "normal") -> tuple[str, int, str]:
@@ -61,10 +70,12 @@ def _font(size: int, weight: str = "normal") -> tuple[str, int, str]:
 
 def apply_theme(root: tk.Tk) -> ttk.Style:
     """Install the dark clam theme and shared widget styles."""
+    tk_scaling = float(root.tk.call("tk", "scaling"))
+    _scale_layout(tk_scaling / _BASE_TK_SCALING)
     style = ttk.Style(root)
     style.theme_use("clam")
     families = set(root.tk.call("font", "families"))
-    FONT["family"] = next((family for family in ("Segoe UI Variable", "Segoe UI") if family in families), "TkDefaultFont")
+    FONT["family"] = next((family for family in ("Segoe UI", "Arial") if family in families), "TkDefaultFont")
     root.configure(background=COLORS["background"])
     root.option_add("*TCombobox*Listbox.background", COLORS["elevated"])
     root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])

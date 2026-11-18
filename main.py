@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tkinter as tk
 from queue import Empty
@@ -56,10 +57,38 @@ def center_window(
     window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
 
 
+def enable_windows_dpi_awareness() -> None:
+    if os.name != "nt":
+        return
+
+    import ctypes
+
+    try:
+        set_awareness = ctypes.windll.shcore.SetProcessDpiAwareness
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError) as exc:
+            logging.warning("Не удалось включить масштабирование DPI: %s", exc)
+        return
+
+    try:
+        result = set_awareness(2)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:
+            logging.warning("Не удалось включить масштабирование DPI: %s", exc)
+        return
+
+    status = result & 0xFFFFFFFF
+    if status not in (0, 0x80070005):
+        logging.warning("Не удалось включить масштабирование DPI (HRESULT 0x%08X)", status)
+
+
 class TicketGeneratorApp:
     def __init__(self, root: tk.Tk, controller: TicketControllerProtocol) -> None:
         self.root = root
         self.controller = controller
+        self.style = apply_theme(root)
         self.root.title("Генератор билетов")
         self.root.minsize(SIZE["main_min_width"], SIZE["main_min_height"])
         self.root.resizable(True, True)
@@ -70,7 +99,6 @@ class TicketGeneratorApp:
         self._messages = controller.messages
         self._busy = False
         self._dialog_open = False
-        self.style = apply_theme(root)
 
         outer = ttk.Frame(root, style="App.TFrame", padding=(SPACE["xxl"], SPACE["xl"]))
         outer.grid(row=0, column=0, sticky="nsew")
@@ -101,7 +129,7 @@ class TicketGeneratorApp:
         card.configure(padding=SPACE["xl"])
         card.grid_columnconfigure(0, weight=1)
 
-        self.source_hint = ttk.Label(card, text="", style="ErrorCard.TLabel", wraplength=SIZE["card_width"] - SPACE["xxl"], justify="left")
+        self.source_hint = ttk.Label(card, text="", style="ErrorCard.TLabel", wraplength=SIZE["card_width"] - SPACE["xxl"], justify="left", anchor="w")
         self.source_hint.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
         self.source_hint.grid_remove()
 
@@ -260,7 +288,7 @@ class TicketGeneratorApp:
         body = ttk.Frame(dialog, style="App.TFrame", padding=SPACE["xl"])
         body.pack(fill="both", expand=True)
         ttk.Label(body, text="Не удалось сохранить", style="Header.TLabel", font=(FONT["family"], FONT["heading"], "bold")).pack(anchor="w", pady=(0, SPACE["sm"]))
-        ttk.Label(body, text="Файл results.xlsx открыт в другой программе. Закройте его и нажмите «Повторить».", style="Subtitle.TLabel", wraplength=SIZE["result_min_width"], justify="left").pack(anchor="w", pady=(0, SPACE["xl"]))
+        ttk.Label(body, text="Файл results.xlsx открыт в другой программе. Закройте его и нажмите «Повторить».", style="Subtitle.TLabel", wraplength=SIZE["result_min_width"], justify="left", anchor="w").pack(anchor="w", pady=(0, SPACE["xl"]))
         buttons = ttk.Frame(body, style="App.TFrame")
         buttons.pack(fill="x")
 
@@ -291,7 +319,7 @@ class TicketGeneratorApp:
         content.grid(row=0, column=0, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
         if assignment.repeated:
-            ttk.Label(content, text="Повторное обращение — билет выдан ранее", style="Banner.TLabel", wraplength=SIZE["result_width"] - SPACE["xxl"]).grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
+            ttk.Label(content, text="Повторное обращение — билет выдан ранее", style="Banner.TLabel", wraplength=SIZE["result_width"] - SPACE["xxl"], anchor="w").grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
             hero_row = 1
         else:
             hero_row = 0
@@ -312,7 +340,7 @@ class TicketGeneratorApp:
             question_card.content.grid_columnconfigure(1, weight=1)
             badge = ttk.Label(question_card.content, text=str(index), style="Badge.TLabel", width=SPACE["lg"])
             badge.grid(row=0, column=0, sticky="n", padx=(0, SPACE["md"]))
-            ttk.Label(question_card.content, text=question, style="Question.TLabel", wraplength=SIZE["result_width"] - SPACE["xxl"] * 2, justify="left").grid(row=0, column=1, sticky="ew")
+            ttk.Label(question_card.content, text=question, style="Question.TLabel", wraplength=SIZE["result_width"] - SPACE["xxl"] * 2, justify="left", anchor="w").grid(row=0, column=1, sticky="ew")
             question_card.content.update_idletasks()
             question_card.configure(height=question_card.content.winfo_reqheight() + SPACE["xs"])
 
@@ -345,6 +373,7 @@ class TicketGeneratorApp:
 
 
 def main() -> None:
+    enable_windows_dpi_awareness()
     root = tk.Tk()
     service: TicketServiceProtocol = LocalTicketService()
     controller = TicketApplicationController(service)
