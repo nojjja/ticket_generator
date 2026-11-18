@@ -1,10 +1,28 @@
-# Генератор экзаменационных билетов — лабораторная работа № 2
+# Exam Ticket Generator
 
-Настольное приложение на Python и Tkinter. Читает группы и студентов из `students.xlsx`, билеты из `tickets.docx` и сразу добавляет каждую выдачу в `results.xlsx`.
+A desktop application built with Python and Tkinter. It reads student rosters from Excel and exam tickets from Word, assigns tickets, and records each result in an Excel journal.
 
-## Запуск
+## Features
 
-Python 3.10 или новее. В каталоге проекта выполните:
+- Select a group and a student from read-only dropdowns.
+- Generate a ticket with three questions from a valid ticket block.
+- Reuse the ticket number from a student's earliest journal entry on repeat visits.
+- Append each result with a timestamp and a repeat marker (`yes` / `no`).
+- Save each result immediately; retry if the journal is locked by another program.
+- Skip and log malformed ticket blocks while continuing with valid tickets.
+- Close the result window with `Esc` and return to the student selection screen. The selected group is kept and the student selection is cleared.
+- Use a dark, DPI-aware Tkinter interface.
+
+## Requirements
+
+- Python 3.10 or newer
+- Windows (the app uses Windows DPI support and `os.startfile` to open the journal)
+
+Python dependencies are listed in `requirements.txt`.
+
+## Setup and run
+
+Open PowerShell in the project directory:
 
 ```powershell
 python -m venv .venv
@@ -13,32 +31,69 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Положите `students.xlsx` и `tickets.docx` рядом с `main.py`. В Excel каждый лист — отдельная группа; строка 1 содержит заголовки, фамилия и имя находятся в столбцах A и B. В Word каждый билет начинается с `Билет N` или `Ticket N` и содержит не менее трёх пронумерованных вопросов вида `1. Текст`.
+Place `students.xlsx` and `tickets.docx` next to `main.py` before starting the app.
 
-`results.xlsx` и `ticket_generator.log` создаются рядом с приложением. Закройте журнал в Excel перед генерацией, чтобы приложение могло сохранить новую строку.
+## Input files
 
-`students.xlsx`, `results.xlsx`, локальные логи и виртуальное окружение исключены из Git. Не публикуйте журнал или реальные персональные данные студентов.
+### `students.xlsx`
 
-После закрытия окна результата выбранная группа остаётся, а студент сбрасывается — можно сразу выбрать следующего.
+- Each worksheet represents one group; the worksheet name is the group name.
+- Row 1 contains column headers.
+- Column A contains student surnames and column B contains first names, starting from row 2.
+- Empty or incomplete rows are skipped.
 
-Если в документе повторяется номер билета, сохраняется первое корректное вхождение, последующие дубликаты пропускаются и записываются в журнал приложения. Случайная выдача выполняется среди фактических уникальных номеров корректных билетов, поэтому нумерация может иметь пропуски.
+### `tickets.docx`
 
-## Проверки
+Each ticket starts with a heading such as `Билет 1` or `Ticket 1`. Questions must be numbered paragraphs, for example:
+
+```text
+Билет 1
+1. First question
+2. Second question
+3. Third question
+```
+
+A valid ticket must contain at least three questions. The first three are shown. Malformed blocks and duplicate ticket numbers are skipped and logged in `ticket_generator.log`.
+
+## Assignment and results
+
+The app checks the journal using the combination of group, surname, and first name. A new student receives a randomly selected valid ticket. A returning student receives the ticket number from their earliest journal entry. Every successful generation is appended as a new row; earlier rows are preserved.
+
+The journal has these columns:
+
+| Column | Value |
+| --- | --- |
+| A | Group |
+| B | Surname |
+| C | First name |
+| D | Ticket number |
+| E | Date and time |
+| F | Repeat (`yes` / `no`) |
+
+`results.xlsx` is created when the first result is saved. Close the workbook in Excel before generating a ticket so the app can write the new row. Use **Open journal** in the app to open it.
+
+## Architecture
+
+- `main.py` — Tkinter windows, controls, and presentation state.
+- `ticket_controller.py` — application use cases and background task coordination; independent of Tkinter.
+- `ticket_service.py` — Excel and Word access, ticket assignment rules, and journal persistence. `LocalTicketService` implements the service protocol.
+- `ui_theme.py` — shared colors, typography, spacing, and ttk styles.
+- `tests/` — unit tests for parsing, group-scoped selection, assignment, saving, and error handling.
+
+The UI depends on a controller protocol, and the controller depends on a service protocol. This keeps the interface, application flow, and file access separate and makes the controller testable without opening a window.
+
+## Tests
+
+Run the unit tests from an activated virtual environment:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Каталог `.venv` исключён из Git; зависимости фиксируются в `requirements.txt`.
+The suite covers valid and malformed Word tickets, student rosters, group-scoped identity, button readiness, repeat-ticket assignment, append-only history, missing or corrupt files, and journal write failures/retries.
 
-## Структура и ответственность компонентов
+GUI interactions such as keyboard focus and closing the result window are not automated by the unit tests and should be checked manually.
 
-- `main.py` отвечает за окна, ввод и отображение состояния.
-- `ticket_controller.py` координирует сценарии и фоновые задачи, не зависит от Tkinter.
-- `ticket_service.py` содержит чтение Word/Excel и правила назначения/сохранения; `LocalTicketService` реализует небольшой протокол для контроллера.
-- `ui_theme.py` хранит визуальные токены и ttk-стили.
-- `tests/` проверяет парсер, групповую идентичность, готовность кнопки, повторы, ошибки файлов и добавление истории.
+## Local data and privacy
 
-## English implementation brief for Copilot Chat
-
-Build a desktop exam-ticket generator in Python using Tkinter. Read `students.xlsx` with openpyxl: each worksheet is a group, row 1 is a header, and columns A/B contain surname/name from row 2 onward. Read `tickets.docx` with python-docx: ticket headers match `Билет N`; numbered question paragraphs match `N. text`. Skip and log malformed ticket blocks and blocks with fewer than three questions; use the first three questions in each valid ticket. Populate a read-only group dropdown at startup, then the matching student dropdown. Keep Generate disabled until both selections are valid and at least one valid ticket exists. On generation, read `results.xlsx` and match group, surname, and name. For a first-time student choose a valid ticket at random; for a repeat reuse the ticket number in their earliest journal row. Append every generation as a new row with timestamp and repeat marker `нет`/`да`, preserving prior rows, and save immediately. Create the journal with headers if missing. Show the ticket number and three questions in a result window; Escape closes only that window. Handle missing or invalid source files and locked journal saves with understandable dialogs, without crashing. Keep the code modular and unit-test ticket parsing, group student lookup, repeat-ticket idempotency, and append-only history.
+The real student workbook, the generated journal, application logs, and the virtual environment are excluded from Git. Do not commit real student names or generated results to a public repository. Replace the ignored local `students.xlsx` with your own roster before running the app.
