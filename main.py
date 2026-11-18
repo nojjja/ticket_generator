@@ -1,262 +1,354 @@
-"""Desktop ticket generator for the Lab 2 assignment."""
+"""Tkinter user interface for the desktop ticket generator."""
 
 from __future__ import annotations
 
-import logging
-import random
+import os
 import tkinter as tk
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from tkinter import messagebox, ttk
+from queue import Empty
+from tkinter import ttk
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils.exceptions import InvalidFileException
-from docx import Document
-
-
-BASE_DIR = Path(__file__).resolve().parent
-STUDENTS_FILE = BASE_DIR / "students.xlsx"
-TICKETS_FILE = BASE_DIR / "tickets.docx"
-RESULTS_FILE = BASE_DIR / "results.xlsx"
-LOG_FILE = BASE_DIR / "ticket_generator.log"
-HEADERS = ("Группа", "Фамилия", "Имя", "Номер билета", "Дата и время", "Повтор (да/нет)")
-
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    encoding="utf-8",
+from ticket_service import (
+    BASE_DIR,
+    HEADERS,
+    LOG_FILE,
+    RESULTS_FILE,
+    STUDENTS_FILE,
+    TICKETS_FILE,
+    LocalTicketService,
+    Ticket,
+    TicketAssignment,
+    append_result,
+    find_first_ticket,
+    load_groups,
+    load_history,
+    parse_tickets,
+    persist_assignment,
+    prepare_assignment,
 )
+from ticket_controller import (
+    TicketApplicationController,
+    TicketControllerProtocol,
+    can_generate_ticket,
+    students_for_group,
+)
+from ticket_service import TicketServiceProtocol
+from ui_theme import COLORS, FONT, SIZE, SPACE, TIMING, apply_theme, rounded_panel
 
 
-@dataclass(frozen=True)
-class Ticket:
-    number: int
-    questions: tuple[str, ...]
+GROUP_PLACEHOLDER = "Выберите группу…"
+STUDENT_PLACEHOLDER = "Сначала выберите группу"
+STUDENT_READY_PLACEHOLDER = "Выберите студента…"
 
 
-def load_groups(path: Path = STUDENTS_FILE) -> dict[str, list[tuple[str, str]]]:
-    """Read group sheets and student surname/name pairs from an Excel workbook."""
-    if not path.exists():
-        raise FileNotFoundError(f"Не найден файл со студентами: {path.name}")
-    try:
-        workbook = load_workbook(path, read_only=True, data_only=True)
-    except (OSError, InvalidFileException, ValueError) as exc:
-        raise ValueError(f"Не удалось прочитать {path.name}: {exc}") from exc
-    groups: dict[str, list[tuple[str, str]]] = {}
-    try:
-        for sheet in workbook.worksheets:
-            students: list[tuple[str, str]] = []
-            for surname, name, *_ in sheet.iter_rows(min_row=2, min_col=1, max_col=2, values_only=True):
-                surname, name = str(surname or "").strip(), str(name or "").strip()
-                if surname and name:
-                    students.append((surname, name))
-            groups[sheet.title] = students
-    finally:
-        workbook.close()
-    return groups
-
-
-def parse_tickets(path: Path = TICKETS_FILE) -> list[Ticket]:
-    """Parse numbered tickets, ignoring and logging malformed ticket blocks."""
-    if not path.exists():
-        raise FileNotFoundError(f"Не найден файл с билетами: {path.name}")
-    try:
-        document = Document(path)
-    except Exception as exc:
-        raise ValueError(f"Не удалось прочитать {path.name}: {exc}") from exc
-
-    tickets: list[Ticket] = []
-    current_number: int | None = None
-    current_questions: list[str] = []
-    invalid_block = False
-
-    def finish_block() -> None:
-        if current_number is None:
-            return
-        if invalid_block or len(current_questions) < 3:
-            logging.warning("Пропущен некорректный билет %s (вопросов: %d)", current_number, len(current_questions))
-            return
-        tickets.append(Ticket(current_number, tuple(current_questions[:3])))
-
-    for paragraph in document.paragraphs:
-        line = paragraph.text.strip()
-        if not line:
-            continue
-        if line.lower().startswith("билет"):
-            finish_block()
-            current_number, current_questions, invalid_block = None, [], False
-            import re
-            match = re.fullmatch(r"Билет\s+(\d+)", line, re.IGNORECASE)
-            if match:
-                current_number = int(match.group(1))
-            else:
-                logging.warning("Не распознан заголовок билета: %s", line)
-                invalid_block = True
-            continue
-        import re
-        question = re.fullmatch(r"\d+\.\s*(.+)", line)
-        if question:
-            if current_number is not None:
-                current_questions.append(question.group(1).strip())
-            elif not invalid_block:
-                logging.warning("Вопрос вне распознанного билета: %s", line)
-    finish_block()
-    if not tickets:
-        raise ValueError("В tickets.docx не найдено ни одного корректного билета с тремя вопросами.")
-    return tickets
-
-
-def find_first_ticket(
-    rows: list[tuple[object, ...]], group: str, surname: str, name: str
-) -> int | None:
-    """Return a student's ticket from their earliest journal entry."""
-    for row in rows:
-        if len(row) >= 4 and tuple(str(value or "").strip() for value in row[:3]) == (group, surname, name):
-            try:
-                return int(row[3])
-            except (TypeError, ValueError):
-                logging.warning("Некорректный номер билета в первой записи %s %s %s", group, surname, name)
-                return None
-    return None
-
-
-def append_result(
-    group: str, surname: str, name: str, ticket_number: int, repeated: bool,
-    path: Path = RESULTS_FILE,
+def center_window(
+    window: tk.Misc,
+    width: int,
+    height: int,
+    parent: tk.Misc | None = None,
 ) -> None:
-    """Append and immediately save a journal row without replacing older rows."""
-    if path.exists():
-        workbook = load_workbook(path)
-        sheet = workbook.active
-        if sheet.max_row == 1 and all(sheet.cell(1, col).value is None for col in range(1, 7)):
-            for col, header in enumerate(HEADERS, 1):
-                sheet.cell(1, col, header)
+    window.update_idletasks()
+    if parent is None:
+        x = (window.winfo_screenwidth() - width) // 2
+        y = (window.winfo_screenheight() - height) // 2
     else:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Результаты"
-        sheet.append(HEADERS)
-    sheet.append((group, surname, name, ticket_number, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "да" if repeated else "нет"))
-    try:
-        workbook.save(path)
-    finally:
-        workbook.close()
+        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+    window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
 
 
 class TicketGeneratorApp:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, controller: TicketControllerProtocol) -> None:
         self.root = root
-        self.root.title("Генератор экзаменационных билетов")
-        self.root.minsize(540, 330)
+        self.controller = controller
+        self.root.title("Генератор билетов")
+        self.root.minsize(SIZE["main_min_width"], SIZE["main_min_height"])
+        self.root.resizable(True, True)
         self.groups: dict[str, list[tuple[str, str]]] = {}
         self.tickets: list[Ticket] = []
-        self.group_var = tk.StringVar()
-        self.student_var = tk.StringVar()
+        self.group_var = tk.StringVar(value=GROUP_PLACEHOLDER)
+        self.student_var = tk.StringVar(value=STUDENT_PLACEHOLDER)
+        self._messages = controller.messages
+        self._busy = False
+        self._dialog_open = False
+        self.style = apply_theme(root)
 
-        frame = ttk.Frame(root, padding=28)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Генератор билетов", font=("Segoe UI", 19, "bold")).pack(anchor="w", pady=(0, 6))
-        ttk.Label(frame, text="Выберите группу и студента, чтобы получить билет.").pack(anchor="w", pady=(0, 24))
-        ttk.Label(frame, text="Группа").pack(anchor="w")
-        self.group_box = ttk.Combobox(frame, textvariable=self.group_var, state="readonly")
-        self.group_box.pack(fill="x", pady=(5, 18))
+        outer = ttk.Frame(root, style="App.TFrame", padding=(SPACE["xxl"], SPACE["xl"]))
+        outer.grid(row=0, column=0, sticky="nsew")
+        root.grid_rowconfigure(0, weight=1)
+        root.grid_columnconfigure(0, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(1, weight=1)
+
+        header = ttk.Frame(outer, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["xl"]))
+        header.grid_columnconfigure(0, weight=1)
+        title_stack = ttk.Frame(header, style="App.TFrame")
+        title_stack.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_stack, text="Генератор билетов", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(title_stack, text="Выберите группу и студента", style="Subtitle.TLabel").pack(anchor="w", pady=(SPACE["xs"], 0))
+        self.source_pill = ttk.Label(header, text="Проверяем файлы…", style="Pill.TLabel")
+        self.source_pill.grid(row=0, column=1, sticky="e", padx=(SPACE["md"], 0))
+
+        card_host = ttk.Frame(outer, style="App.TFrame")
+        card_host.grid(row=1, column=0, sticky="nsew")
+        card_host.grid_rowconfigure(0, weight=1)
+        card_host.grid_columnconfigure(0, weight=1)
+        self.card_panel = rounded_panel(card_host, fill=COLORS["surface"], outline=COLORS["surface_border"])
+        self.card_panel.configure(width=SIZE["card_width"], height=SIZE["main_card_height"])
+        self.card_panel.minimum_height = SIZE["main_card_height"]
+        self.card_panel.grid(row=0, column=0)
+        card = self.card_panel.content
+        card.configure(padding=SPACE["xl"])
+        card.grid_columnconfigure(0, weight=1)
+
+        self.source_hint = ttk.Label(card, text="", style="ErrorCard.TLabel", wraplength=SIZE["card_width"] - SPACE["xxl"], justify="left")
+        self.source_hint.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
+        self.source_hint.grid_remove()
+
+        ttk.Label(card, text="Группа", style="Card.TLabel").grid(row=1, column=0, sticky="w")
+        self.group_box = ttk.Combobox(card, textvariable=self.group_var, state="disabled", values=())
+        self.group_box.grid(row=2, column=0, sticky="ew", pady=(SPACE["sm"], SPACE["lg"]))
         self.group_box.bind("<<ComboboxSelected>>", self.on_group_selected)
-        ttk.Label(frame, text="Студент").pack(anchor="w")
-        self.student_box = ttk.Combobox(frame, textvariable=self.student_var, state="disabled")
-        self.student_box.pack(fill="x", pady=(5, 22))
-        self.student_box.bind("<<ComboboxSelected>>", self.update_button)
-        self.generate_button = ttk.Button(frame, text="Сгенерировать билет", command=self.generate, state="disabled")
-        self.generate_button.pack(anchor="w")
-        self.status = ttk.Label(frame, text="")
-        self.status.pack(anchor="w", pady=(18, 0))
-        self.reload_sources(show_errors=True)
 
-    def reload_sources(self, show_errors: bool = False) -> None:
-        errors = []
+        ttk.Label(card, text="Студент", style="Card.TLabel").grid(row=3, column=0, sticky="w")
+        self.student_box = ttk.Combobox(card, textvariable=self.student_var, state="disabled", values=())
+        self.student_box.grid(row=4, column=0, sticky="ew", pady=(SPACE["sm"], SPACE["xs"]))
+        self.student_box.bind("<<ComboboxSelected>>", self.update_button)
+        self.empty_group_hint = ttk.Label(card, text="В этой группе нет студентов", style="WarningCard.TLabel")
+        self.empty_group_hint.grid(row=5, column=0, sticky="w", pady=(0, SPACE["sm"]))
+        self.empty_group_hint.grid_remove()
+
+        self.generate_button = ttk.Button(card, text="Сгенерировать билет", style="Primary.TButton", command=self.generate, state="disabled")
+        self.generate_button.grid(row=6, column=0, sticky="ew", ipady=SPACE["xs"], pady=(SPACE["lg"], 0))
+        self.generate_button.bind("<Enter>", self._button_hover)
+        self.generate_button.bind("<Leave>", self._button_leave)
+
+        footer = ttk.Frame(outer, style="App.TFrame")
+        footer.grid(row=2, column=0, sticky="ew", pady=(SPACE["lg"], 0))
+        footer.grid_columnconfigure(0, weight=1)
+        self.status = ttk.Label(footer, text="Готово", style="Status.TLabel")
+        self.status.grid(row=0, column=0, sticky="w")
+        self.open_journal_button = ttk.Button(footer, text="Открыть журнал", style="Ghost.TButton", command=self.open_journal)
+        self.open_journal_button.grid(row=0, column=1, sticky="e")
+
+        self.root.bind_all("<Return>", self._on_enter)
+        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        center_window(self.root, SIZE["main_width"], SIZE["main_height"])
+        self.root.after(SPACE["xxl"], self.group_box.focus_set)
+        self.root.after(TIMING["ui_poll_ms"], self._poll_messages)
+        self.controller.load_sources_async()
+
+    def _set_status(self, text: str, kind: str = "normal") -> None:
+        styles = {"normal": "Status.TLabel", "success": "Success.TLabel", "warning": "Warning.TLabel", "error": "Error.TLabel"}
+        self.status.configure(text=text, style=styles.get(kind, "Status.TLabel"))
+
+    def _button_hover(self, _event: tk.Event) -> None:
+        self.root.configure(cursor="hand2" if str(self.generate_button["state"]) == "normal" else "")
+
+    def _button_leave(self, _event: tk.Event) -> None:
+        self.root.configure(cursor="")
+
+    def _poll_messages(self) -> None:
         try:
-            self.groups = load_groups()
-            self.group_box["values"] = tuple(self.groups)
-        except (FileNotFoundError, ValueError) as exc:
-            self.groups = {}
-            self.group_box["values"] = ()
-            errors.append(str(exc))
-        try:
-            self.tickets = parse_tickets()
-        except (FileNotFoundError, ValueError) as exc:
-            self.tickets = []
-            errors.append(str(exc))
-        self.update_button()
+            while True:
+                kind, payload = self._messages.get_nowait()
+                if kind == "sources":
+                    self._sources_loaded(payload)
+                elif kind == "generation":
+                    self._generation_finished(payload)
+        except Empty:
+            pass
+        if self.root.winfo_exists():
+            self.root.after(TIMING["ui_poll_ms"], self._poll_messages)
+
+    def _sources_loaded(self, payload: object) -> None:
+        groups, tickets, errors = payload
+        self.groups = groups
+        self.tickets = tickets
+        self.group_box["values"] = tuple(self.groups)
+        self.group_box.configure(state="readonly" if self.groups else "disabled")
         if errors:
-            self.status.configure(text="Источники не загружены. Исправьте файлы и перезапустите приложение.")
-            if show_errors:
-                messagebox.showerror("Ошибка входных файлов", "\n\n".join(errors))
+            details = "\n".join(errors)
+            self.source_hint.configure(text=f"Не удалось загрузить входные файлы.\nПоместите students.xlsx и tickets.docx рядом с приложением:\n{self.controller.service.base_dir}\n\n{details}")
+            self.source_hint.grid()
+            self.source_pill.configure(text="Данные не загружены")
+            self._set_status("Проверьте входные файлы", "error")
         else:
-            self.status.configure(text=f"Загружено групп: {len(self.groups)} · билетов: {len(self.tickets)}")
+            self.source_pill.configure(text=f"Загружено: {len(self.groups)} групп · {len(self.tickets)} билетов")
+            self._set_status("Готово")
+            self.group_box.focus_set()
+        self.update_button()
 
     def on_group_selected(self, _event: object = None) -> None:
         group = self.group_var.get()
-        students = self.groups.get(group, [])
-        self.student_var.set("")
+        students = students_for_group(self.groups, group)
+        self.student_var.set(STUDENT_READY_PLACEHOLDER if group in self.groups else STUDENT_PLACEHOLDER)
         self.student_box["values"] = tuple(f"{surname} {name}" for surname, name in students)
         self.student_box.configure(state="readonly" if students else "disabled")
-        if not students:
-            self.status.configure(text="В этой группе нет студентов.")
+        if students:
+            self.empty_group_hint.grid_remove()
+            self._set_status(f"Студентов в группе: {len(students)}")
         else:
-            self.status.configure(text=f"Студентов в группе: {len(students)}")
+            self.empty_group_hint.grid()
+            self._set_status("В этой группе нет студентов", "warning")
         self.update_button()
 
     def update_button(self, _event: object = None) -> None:
-        ready = bool(self.group_var.get() and self.student_var.get() and self.tickets)
+        group, student = self.group_var.get(), self.student_var.get()
+        ready = can_generate_ticket(group, student, self.groups, bool(self.tickets), self._busy)
         self.generate_button.configure(state="normal" if ready else "disabled")
 
-    def generate(self) -> None:
-        group = self.group_var.get()
-        selected = self.student_var.get()
-        match = next((student for student in self.groups.get(group, []) if f"{student[0]} {student[1]}" == selected), None)
-        if not match or not self.tickets:
-            return
-        surname, name = match
-        try:
-            history: list[tuple[object, ...]] = []
-            if RESULTS_FILE.exists():
-                book = load_workbook(RESULTS_FILE, read_only=True, data_only=True)
-                try:
-                    sheet = book.active
-                    history = list(sheet.iter_rows(min_row=2, values_only=True))
-                finally:
-                    book.close()
-            previous = find_first_ticket(history, group, surname, name)
-            ticket_number = previous if previous is not None else random.choice(self.tickets).number
-            ticket = next((item for item in self.tickets if item.number == ticket_number), None)
-            if ticket is None:
-                raise ValueError(f"Билет № {ticket_number} из журнала отсутствует в текущем файле билетов.")
-            append_result(group, surname, name, ticket_number, previous is not None)
-        except (OSError, PermissionError, ValueError, InvalidFileException) as exc:
-            logging.exception("Не удалось сохранить результат")
-            if messagebox.askretrycancel("Не удалось сохранить", f"Проверьте, что results.xlsx закрыт в Excel.\n\n{exc}\n\nПовторить сохранение?"):
-                self.generate()
-            return
-        self.show_result(ticket)
+    def _on_enter(self, _event: tk.Event) -> str | None:
+        if not self._dialog_open and str(self.generate_button["state"]) == "normal":
+            self.generate()
+            return "break"
+        return None
 
-    def show_result(self, ticket: Ticket) -> None:
+    def open_journal(self) -> None:
+        results_path = self.controller.service.results_path
+        if not results_path.exists():
+            self._set_status("Журнал появится после первой выдачи билета", "warning")
+            return
+        try:
+            os.startfile(str(results_path))
+            self._set_status("Журнал открыт", "success")
+        except OSError:
+            self._set_status("Не удалось открыть results.xlsx", "error")
+
+    def generate(self) -> None:
+        group, selected = self.group_var.get(), self.student_var.get()
+        student = next((person for person in self.groups.get(group, []) if f"{person[0]} {person[1]}" == selected), None)
+        if student is None or not self.tickets or self._busy:
+            return
+        self._busy = True
+        self.update_button()
+        self._set_status("Сохраняем результат…")
+        self.controller.generate_async(group, student[0], student[1], self.tickets)
+
+    def _generation_finished(self, payload: object) -> None:
+        assignment, error = payload
+        if error is not None:
+            if isinstance(error, OSError):
+                retry = self._ask_retry_cancel()
+                if retry:
+                    group = assignment.group if assignment else self.group_var.get()
+                    surname = assignment.surname if assignment else ""
+                    name = assignment.name if assignment else ""
+                    if assignment is None:
+                        person = next((student for student in self.groups.get(group, []) if f"{student[0]} {student[1]}" == self.student_var.get()), None)
+                        if person is not None:
+                            surname, name = person
+                    self.controller.generate_async(group, surname, name, self.tickets, assignment)
+                    return
+                self._set_status("Сохранение отменено", "warning")
+            else:
+                self._set_status("Результат не сохранён. Проверьте файл журнала", "error")
+            self._busy = False
+            self.update_button()
+            return
+        self._busy = False
+        self._set_status("Результат сохранён в results.xlsx", "success")
+        self.show_result(assignment)
+
+    def _ask_retry_cancel(self) -> bool:
         dialog = tk.Toplevel(self.root)
-        dialog.title(f"Билет № {ticket.number}")
+        dialog.title("Файл журнала занят")
+        dialog.configure(background=COLORS["background"])
         dialog.transient(self.root)
+        dialog.resizable(False, False)
+        result = {"retry": False}
+        body = ttk.Frame(dialog, style="App.TFrame", padding=SPACE["xl"])
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Не удалось сохранить", style="Header.TLabel", font=(FONT["family"], FONT["heading"], "bold")).pack(anchor="w", pady=(0, SPACE["sm"]))
+        ttk.Label(body, text="Файл results.xlsx открыт в другой программе. Закройте его и нажмите «Повторить».", style="Subtitle.TLabel", wraplength=SIZE["result_min_width"], justify="left").pack(anchor="w", pady=(0, SPACE["xl"]))
+        buttons = ttk.Frame(body, style="App.TFrame")
+        buttons.pack(fill="x")
+
+        def finish(retry: bool) -> None:
+            result["retry"] = retry
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Отмена", style="Ghost.TButton", command=lambda: finish(False)).pack(side="right")
+        ttk.Button(buttons, text="Повторить", style="Primary.TButton", command=lambda: finish(True)).pack(side="right", padx=(0, SPACE["sm"]))
+        dialog.bind("<Escape>", lambda _event: finish(False))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        center_window(dialog, SIZE["lock_dialog_width"], SIZE["lock_dialog_height"], self.root)
         dialog.grab_set()
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        content = ttk.Frame(dialog, padding=28)
-        content.pack(fill="both", expand=True)
-        ttk.Label(content, text=f"Ваш билет № {ticket.number}", font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(0, 18))
-        for index, question in enumerate(ticket.questions, 1):
-            ttk.Label(content, text=f"{index}. {question}", wraplength=560, justify="left").pack(anchor="w", pady=7)
-        ttk.Button(content, text="Закрыть", command=dialog.destroy).pack(anchor="e", pady=(18, 0))
+        dialog.wait_window()
+        return result["retry"]
+
+    def show_result(self, assignment: TicketAssignment) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Ваш билет")
+        dialog.configure(background=COLORS["background"])
+        dialog.transient(self.root)
+        dialog.minsize(SIZE["result_min_width"], SIZE["result_min_height"])
+        dialog.resizable(True, True)
+        dialog.grid_rowconfigure(0, weight=1)
+        dialog.grid_columnconfigure(0, weight=1)
+
+        content = ttk.Frame(dialog, style="App.TFrame", padding=SPACE["xxl"])
+        content.grid(row=0, column=0, sticky="nsew")
+        content.grid_columnconfigure(0, weight=1)
+        if assignment.repeated:
+            ttk.Label(content, text="Повторное обращение — билет выдан ранее", style="Banner.TLabel", wraplength=SIZE["result_width"] - SPACE["xxl"]).grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
+            hero_row = 1
+        else:
+            hero_row = 0
+
+        ttk.Label(content, text=f"{assignment.surname} {assignment.name} · {assignment.group}", style="Subtitle.TLabel").grid(row=hero_row, column=0, sticky="w")
+        hero = ttk.Frame(content, style="App.TFrame")
+        hero.grid(row=hero_row + 1, column=0, sticky="w", pady=(SPACE["sm"], SPACE["xl"]))
+        ttk.Label(hero, text="Ваш билет № ", style="Hero.TLabel").pack(side="left")
+        ttk.Label(hero, text=str(assignment.ticket.number), style="Hero.TLabel", foreground=COLORS["accent"]).pack(side="left")
+
+        questions = ttk.Frame(content, style="App.TFrame")
+        questions.grid(row=hero_row + 2, column=0, sticky="nsew")
+        questions.grid_columnconfigure(0, weight=1)
+        for index, question in enumerate(assignment.ticket.questions, 1):
+            question_card = rounded_panel(questions, fill=COLORS["elevated"], outline=COLORS["surface_border"], radius=SIZE["corner"], content_style="Question.TFrame")
+            question_card.grid(row=index - 1, column=0, sticky="ew", pady=(0, SPACE["md"]))
+            question_card.content.configure(padding=SPACE["lg"])
+            question_card.content.grid_columnconfigure(1, weight=1)
+            badge = ttk.Label(question_card.content, text=str(index), style="Badge.TLabel", width=SPACE["lg"])
+            badge.grid(row=0, column=0, sticky="n", padx=(0, SPACE["md"]))
+            ttk.Label(question_card.content, text=question, style="Question.TLabel", wraplength=SIZE["result_width"] - SPACE["xxl"] * 2, justify="left").grid(row=0, column=1, sticky="ew")
+            question_card.content.update_idletasks()
+            question_card.configure(height=question_card.content.winfo_reqheight() + SPACE["xs"])
+
+        footer = ttk.Frame(content, style="App.TFrame")
+        footer.grid(row=hero_row + 3, column=0, sticky="ew", pady=(SPACE["lg"], 0))
+        footer.grid_columnconfigure(0, weight=1)
+        ttk.Label(footer, text="Нажмите ESC, чтобы закрыть", style="Status.TLabel").grid(row=0, column=0, sticky="w")
+
+        def close_result(_event: object = None) -> None:
+            self._dialog_open = False
+            dialog.destroy()
+            self.student_var.set(STUDENT_READY_PLACEHOLDER if self.group_var.get() in self.groups else STUDENT_PLACEHOLDER)
+            self.update_button()
+            self.root.lift()
+            self.root.focus_force()
+            if self.student_box["state"] != "disabled":
+                self.student_box.focus_set()
+            else:
+                self.group_box.focus_set()
+
+        ttk.Button(footer, text="Закрыть", style="Secondary.TButton", command=close_result).grid(row=0, column=1, sticky="e")
+        dialog.bind("<Escape>", close_result)
+        dialog.protocol("WM_DELETE_WINDOW", close_result)
+        self._dialog_open = True
+        dialog.update_idletasks()
+        desired_height = max(SIZE["result_height"], content.winfo_reqheight() + SPACE["xxl"] * 2)
+        center_window(dialog, SIZE["result_width"], desired_height, self.root)
+        dialog.grab_set()
+        dialog.focus_set()
 
 
 def main() -> None:
     root = tk.Tk()
-    TicketGeneratorApp(root)
+    service: TicketServiceProtocol = LocalTicketService()
+    controller = TicketApplicationController(service)
+    TicketGeneratorApp(root, controller)
     root.mainloop()
 
 

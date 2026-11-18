@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.py[cod]
+ticket_generator.log
+results.xlsx
+students.xlsx
